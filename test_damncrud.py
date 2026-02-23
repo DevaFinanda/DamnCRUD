@@ -289,22 +289,33 @@ class TC05_HapusKontak(unittest.TestCase):
         take_screenshot(driver, "TC05", "sebelum_hapus_kontak")
 
         print("  [TC05] Langkah 6: Navigasi ke URL delete (bypass confirm dialog)...")
-        driver.execute_script(f"window.location.href = '{delete_url}';")
+        # Gunakan driver.get() agar navigasi selesai sepenuhnya sebelum lanjut
+        driver.get(delete_url)
 
-        print("  [TC05] Langkah 7-8: Menunggu redirect dan DataTable terupdate...")
+        print("  [TC05] Langkah 7-8: Menunggu redirect ke dashboard dan DataTable siap...")
         WebDriverWait(driver, WAIT_TIMEOUT).until(EC.url_contains("index.php"))
+        WebDriverWait(driver, WAIT_TIMEOUT).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "#employee_filter input"))
+        )
         time.sleep(1.5)
 
-        print("  [TC05] Langkah 9: Membaca total entries setelah hapus...")
-        total_after = get_total_entries(driver)
-        print(f"         Total entries setelah hapus: {total_after}")
+        print("  [TC05] Langkah 9: Mencari kontak yang sudah dihapus via DataTable search...")
+        # Verifikasi berdasarkan keberadaan kontak spesifik, bukan total count,
+        # agar tidak terpengaruh race condition dengan TC03 yang berjalan paralel.
+        search_in_datatable(driver, contact_name)
 
-        print("  [TC05] Langkah 10-11: Screenshot dan verifikasi total berkurang...")
+        print("  [TC05] Langkah 10-11: Screenshot dan verifikasi kontak sudah hilang...")
         take_screenshot(driver, "TC05", "hapus_kontak_berhasil")
-        self.assertLess(total_after, total_before,
-                        f"FAIL: Total seharusnya berkurang. Before={total_before}, After={total_after}")
-        print(f"[TC05] PASS - Kontak '{contact_name}' berhasil dihapus. "
-              f"Total: {total_before} -> {total_after}.")
+
+        # Setelah filter, pastikan baris hasil kosong (no matching records)
+        filtered_rows = driver.find_elements(By.CSS_SELECTOR, "#employee tbody tr")
+        # DataTable menampilkan satu baris "No matching records found" saat kosong
+        row_text = filtered_rows[0].text if filtered_rows else ""
+        self.assertTrue(
+            len(filtered_rows) == 0 or "No matching" in row_text,
+            f"FAIL: Kontak '{contact_name}' masih ditemukan di tabel setelah dihapus."
+        )
+        print(f"[TC05] PASS - Kontak '{contact_name}' berhasil dihapus dan tidak ditemukan di tabel.")
 
 
 if __name__ == "__main__":
