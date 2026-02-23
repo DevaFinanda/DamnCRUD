@@ -1,0 +1,108 @@
+name: DamnCRUD CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  selenium-tests:
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ''
+          MYSQL_ALLOW_EMPTY_PASSWORD: yes
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      DB_HOST: 127.0.0.1
+      DB_USER: root
+      DB_PASS: ''
+      DB_NAME: damncrud
+      BASE_URL: http://localhost:8080
+      CI: true
+
+    steps:
+      # ── 1. Source code ──────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. PHP runtime ──────────────────────────────────────────────────────
+      - name: Set up PHP 8.1
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          extensions: pdo_mysql, mysqli
+
+      # ── 3. Database ─────────────────────────────────────────────────────────
+      - name: Import database schema and seed data
+        run: |
+          mysql -h 127.0.0.1 -P 3306 -u root --protocol=TCP < db/damncrud.sql
+
+      # ── 4. PHP built-in web server (serves app at localhost:8080) ──────────
+      - name: Start PHP built-in server
+        run: |
+          php -S localhost:8080 -t . > /tmp/php_server.log 2>&1 &
+          echo "PHP_SERVER_PID=$!" >> $GITHUB_ENV
+          # Wait until the server is ready
+          for i in {1..15}; do
+            curl -sf http://localhost:8080/login.php > /dev/null && echo "Server ready." && break
+            echo "Waiting for server... ($i)"
+            sleep 2
+          done
+          curl -f http://localhost:8080/login.php > /dev/null || (cat /tmp/php_server.log && exit 1)
+
+      # ── 5. Python runtime ───────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      # ── 6. Browser (Chrome + matching ChromeDriver) ─────────────────────────
+      - name: Set up Google Chrome
+        uses: browser-actions/setup-chrome@v1
+
+      # ── 7. Run all 5 test cases in parallel (5 workers) ────────────────────
+      - name: Run tests in parallel with pytest-xdist
+        run: |
+          pytest test_damncrud.py \
+            -n 5 \
+            -v \
+            --tb=short \
+            --junit-xml=test-results.xml
+
+      # ── 8. Publish results & artifacts ─────────────────────────────────────
+      - name: Upload JUnit test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: test-results.xml
+          retention-days: 30
+
+      - name: Upload Selenium screenshots
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: screenshoot/
+          retention-days: 30
+
+      # ── 9. Show PHP server log on failure ───────────────────────────────────
+      - name: Show PHP server log (on failure)
+        if: failure()
+        run: cat /tmp/php_server.log || true
